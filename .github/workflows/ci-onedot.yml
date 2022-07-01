@@ -1,0 +1,70 @@
+name: ci-onedot
+on:
+  push:
+    branches: [main ]
+    paths:
+      - "**/onedot/**"
+  pull_request:
+    
+env:
+  REPOSITORY: tworeact
+  DOCKER_BUILD_FILE_PATH: ./onedot/Dockerfile.build
+  DOCKER_FILE_PATH: ./onedot/Dockerfile.publish
+  DOCKER_BUILD_CONTEXT: ./onedot
+  DOCKER_PUBLISH_CONTEXT: ./publish
+  CONTAINER_NAME: onedotCI
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Out Repo
+        uses: actions/checkout@v3
+      - name: Login to Azure Container Registry
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Build and Test
+        run: docker build ${{ env.DOCKER_BUILD_CONTEXT }} -f ${{ env.DOCKER_BUILD_FILE_PATH }} -t ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPOSITORY}}:${GITHUB_REF##*/}-${{ github.run_number }}
+
+      - name: Runs docker
+        run: docker run --name ${{ env.CONTAINER_NAME }} -d ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPOSITORY}}:${GITHUB_REF##*/}-${{ github.run_number }}
+
+      - name: copy build files
+        run: |
+          docker cp ${{ env.CONTAINER_NAME }}:/app/publish/ ./
+          docker cp ${{ env.CONTAINER_NAME }}:/testresults/ ./
+          docker rm ${{ env.CONTAINER_NAME }}
+        
+      - name: copy coverage report
+        run: cp testresults/coverage/coverage.cobertura.xml coverage.cobertura.xml
+
+      - name: publish test results
+        uses: dorny/test-reporter@v1
+        with:
+          name: test-results
+          path: "**/*.trx"
+          reporter: dotnet-trx
+
+      - name: publish coverage report
+        uses: irongut/CodeCoverageSummary@v1.2.0
+        with:
+          filename: "coverage.cobertura.xml"
+          format: "markdown"
+          output: "both"
+          badge: true
+
+      - name: Add Coverage PR Comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        if: github.event_name == 'pull_request'
+        with:
+          recreate: true
+          path: code-coverage-results.md
+
+      - name: Build and  push image to container registry
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          docker build ${{ env.DOCKER_PUBLISH_CONTEXT }} -f ${{ env.DOCKER_FILE_PATH }} -t ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPOSITORY}}:${GITHUB_REF##*/}-${{ github.run_number }}
+          docker push ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPOSITORY}}:${GITHUB_REF##*/}-${{ github.run_number }}
